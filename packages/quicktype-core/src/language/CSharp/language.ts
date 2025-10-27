@@ -56,7 +56,6 @@ export const cSharpOptions = {
         "normal",
         "secondary",
     ),
-    // FIXME: Do this via a configurable named eventually.
     namespace: new StringOption(
         "namespace",
         "Generated namespace",
@@ -137,10 +136,21 @@ export const cSharpOptions = {
         "Keep original field name generate",
         false,
     ),
+
+    // New options
+    noDateOnly: new BooleanOption(
+        "no-dateonly",
+        "Do not use DateOnly even for date-only shapes",
+        false,
+    ),
+    noTimeOnly: new BooleanOption(
+        "no-timeonly",
+        "Do not use TimeOnly even for time-only shapes",
+        false,
+    ),
 } as const;
 
 export const newtonsoftCSharpOptions = Object.assign({}, cSharpOptions, {});
-
 export const systemTextJsonCSharpOptions = Object.assign({}, cSharpOptions, {});
 
 export const cSharpLanguageConfig = {

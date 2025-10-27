@@ -74,6 +74,23 @@ export class SystemTextJsonCSharpRenderer extends CSharpRenderer {
         this._needNamespaces = _options.features.namespaces;
     }
 
+    // === Added helpers to honor no-dateonly / no-timeonly flags ===
+    private useDateOnly(): boolean {
+        // default behavior: true unless explicitly disabled via flag
+        return !(this._options as any).noDateOnly;
+    }
+    private useTimeOnly(): boolean {
+        return !(this._options as any).noTimeOnly;
+    }
+    // Wrap base mapping to allow local overrides without changing shared logic
+    private csTypeLocal(t: Type): Sourcelike {
+        const base = this.csType(t);
+        if (base === "DateOnly" && !this.useDateOnly()) return "DateTime";
+        if (base === "TimeOnly" && !this.useTimeOnly()) return "TimeSpan";
+        return base;
+    }
+    // === End helpers ===
+
     protected forbiddenNamesForGlobalNamespace(): string[] {
         const forbidden = [
             "Converter",
@@ -281,20 +298,6 @@ export class SystemTextJsonCSharpRenderer extends CSharpRenderer {
             ]);
         }
 
-        // const requiredClass = this._options.dense ? "R" : "Required";
-        // const nullValueHandlingClass = this._options.dense ? "N" : "NullValueHandling";
-        // const nullValueHandling = isOptional && !isNullable ? [", NullValueHandling = ", nullValueHandlingClass, ".Ignore"] : [];
-        // let required: Sourcelike;
-        // if (!this._options.checkRequired || (isOptional && isNullable)) {
-        //     required = [nullValueHandling];
-        // } else if (isOptional && !isNullable) {
-        //     required = [", Required = ", requiredClass, ".DisallowNull", nullValueHandling];
-        // } else if (!isOptional && isNullable) {
-        //     required = [", Required = ", requiredClass, ".AllowNull"];
-        // } else {
-        //     required = [", Required = ", requiredClass, ".Always", nullValueHandling];
-        // }
-
         attributes.push(["[", jsonPropertyName, '("', escapedName, '")]']);
 
         const converter = this.converterForType(property.type);
@@ -313,7 +316,7 @@ export class SystemTextJsonCSharpRenderer extends CSharpRenderer {
     private topLevelResultType(t: Type): Sourcelike {
         return t.kind === "any" || t.kind === "none"
             ? "object"
-            : this.csType(t);
+            : this.csTypeLocal(t);
     }
 
     private emitFromJsonForTopLevel(t: Type, name: Name): void {
@@ -499,8 +502,12 @@ export class SystemTextJsonCSharpRenderer extends CSharpRenderer {
                             }
                         }
 
-                        this.emitLine("new DateOnlyConverter(),");
-                        this.emitLine("new TimeOnlyConverter(),");
+                        // Conditionally register DateOnly/TimeOnly converters
+                        if (this.useDateOnly())
+                            this.emitLine("new DateOnlyConverter(),");
+                        if (this.useTimeOnly())
+                            this.emitLine("new TimeOnlyConverter(),");
+
                         this.emitLine("IsoDateTimeOffsetConverter.Singleton");
                         // this.emitLine("new IsoDateTimeConverter { DateTimeStyles = DateTimeStyles.AssumeUniversal }");
                     });
@@ -560,7 +567,7 @@ export class SystemTextJsonCSharpRenderer extends CSharpRenderer {
             const source = xfer.sourceType;
             const converter = this.converterForType(targetType);
             if (converter !== undefined) {
-                const typeSource = this.csType(targetType);
+                const typeSource = this.csTypeLocal(targetType);
                 this.emitLine(
                     "var converter = ",
                     this.converterObject(converter),
@@ -582,7 +589,7 @@ export class SystemTextJsonCSharpRenderer extends CSharpRenderer {
                     "var ",
                     variableName,
                     " = ",
-                    this.deserializeTypeCode(this.csType(output)),
+                    this.deserializeTypeCode(this.csTypeLocal(output)),
                     ";",
                 );
             }
@@ -607,7 +614,7 @@ export class SystemTextJsonCSharpRenderer extends CSharpRenderer {
                 "var ",
                 variableName,
                 " = new List<",
-                this.csType(targetType.items),
+                this.csTypeLocal(targetType.items),
                 ">();",
             );
             this.emitLine("while (reader.TokenType != JsonToken.EndArray)");
@@ -1093,7 +1100,7 @@ export class SystemTextJsonCSharpRenderer extends CSharpRenderer {
         const reverse = xf.reverse;
         const targetType = xf.targetType;
         const xfer = xf.transformer;
-        const csType = this.csType(targetType);
+        const csType = this.csTypeLocal(targetType);
         // const haveNullable = isValueType(targetType);
 
         // if (haveNullable) {
@@ -1197,116 +1204,123 @@ export class SystemTextJsonCSharpRenderer extends CSharpRenderer {
             this.forEachTransformation("leading-and-interposing", (n, t) =>
                 this.emitTransformation(n, t),
             );
+
+            // Always emit IsoDateTimeOffsetConverter
             this.emitMultiline(`
-public class DateOnlyConverter : JsonConverter<DateOnly>
-{
-	private readonly string serializationFormat;
-	public DateOnlyConverter() : this(null) { }
-
-	public DateOnlyConverter(string? serializationFormat)
-	{
-			this.serializationFormat = serializationFormat ?? "yyyy-MM-dd";
-	}
-
-	public override DateOnly Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
-	{
-			var value = reader.GetString();
-			return DateOnly.Parse(value!);
-	}
-
-	public override void Write(Utf8JsonWriter writer, DateOnly value, JsonSerializerOptions options)
-			=> writer.WriteStringValue(value.ToString(serializationFormat));
-}
-
-public class TimeOnlyConverter : JsonConverter<TimeOnly>
-{
-	private readonly string serializationFormat;
-
-	public TimeOnlyConverter() : this(null) { }
-
-	public TimeOnlyConverter(string? serializationFormat)
-	{
-			this.serializationFormat = serializationFormat ?? "HH:mm:ss.fff";
-	}
-
-	public override TimeOnly Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
-	{
-			var value = reader.GetString();
-			return TimeOnly.Parse(value!);
-	}
-
-	public override void Write(Utf8JsonWriter writer, TimeOnly value, JsonSerializerOptions options)
-			=> writer.WriteStringValue(value.ToString(serializationFormat));
-}
-
 internal class IsoDateTimeOffsetConverter : JsonConverter<DateTimeOffset>
 {
-	public override bool CanConvert(Type t) => t == typeof(DateTimeOffset);
+    public override bool CanConvert(Type t) => t == typeof(DateTimeOffset);
 
-	private const string DefaultDateTimeFormat = "yyyy'-'MM'-'dd'T'HH':'mm':'ss.FFFFFFFK";
+    private const string DefaultDateTimeFormat = "yyyy'-'MM'-'dd'T'HH':'mm':'ss.FFFFFFFK";
 
-	private DateTimeStyles _dateTimeStyles = DateTimeStyles.RoundtripKind;
-	private string? _dateTimeFormat;
-	private CultureInfo? _culture;
+    private DateTimeStyles _dateTimeStyles = DateTimeStyles.RoundtripKind;
+    private string? _dateTimeFormat;
+    private CultureInfo? _culture;
 
-	public DateTimeStyles DateTimeStyles
-	{
-			get => _dateTimeStyles;
-			set => _dateTimeStyles = value;
-	}
+    public DateTimeStyles DateTimeStyles
+    {
+        get => _dateTimeStyles;
+        set => _dateTimeStyles = value;
+    }
 
-	public string? DateTimeFormat
-	{
-			get => _dateTimeFormat ?? string.Empty;
-			set => _dateTimeFormat = (string.IsNullOrEmpty(value)) ? null : value;
-	}
+    public string? DateTimeFormat
+    {
+        get => _dateTimeFormat ?? string.Empty;
+        set => _dateTimeFormat = (string.IsNullOrEmpty(value)) ? null : value;
+    }
 
-	public CultureInfo Culture
-	{
-			get => _culture ?? CultureInfo.CurrentCulture;
-			set => _culture = value;
-	}
+    public CultureInfo Culture
+    {
+        get => _culture ?? CultureInfo.CurrentCulture;
+        set => _culture = value;
+    }
 
-	public override void Write(Utf8JsonWriter writer, DateTimeOffset value, JsonSerializerOptions options)
-	{
-			string text;
+    public override void Write(Utf8JsonWriter writer, DateTimeOffset value, JsonSerializerOptions options)
+    {
+        if ((_dateTimeStyles & DateTimeStyles.AdjustToUniversal) == DateTimeStyles.AdjustToUniversal
+            || (_dateTimeStyles & DateTimeStyles.AssumeUniversal) == DateTimeStyles.AssumeUniversal)
+        {
+            value = value.ToUniversalTime();
+        }
 
+        var text = value.ToString(_dateTimeFormat ?? DefaultDateTimeFormat, Culture);
+        writer.WriteStringValue(text);
+    }
 
-			if ((_dateTimeStyles & DateTimeStyles.AdjustToUniversal) == DateTimeStyles.AdjustToUniversal
-					|| (_dateTimeStyles & DateTimeStyles.AssumeUniversal) == DateTimeStyles.AssumeUniversal)
-			{
-					value = value.ToUniversalTime();
-			}
+    public override DateTimeOffset Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        string? dateText = reader.GetString();
+        if (!string.IsNullOrEmpty(dateText))
+        {
+            if (!string.IsNullOrEmpty(_dateTimeFormat))
+            {
+                return DateTimeOffset.ParseExact(dateText, _dateTimeFormat, Culture, _dateTimeStyles);
+            }
+            else
+            {
+                return DateTimeOffset.Parse(dateText, Culture, _dateTimeStyles);
+            }
+        }
+        else
+        {
+            return default(DateTimeOffset);
+        }
+    }
 
-			text = value.ToString(_dateTimeFormat ?? DefaultDateTimeFormat, Culture);
+    public static readonly IsoDateTimeOffsetConverter Singleton = new IsoDateTimeOffsetConverter();
+}
+`);
 
-			writer.WriteStringValue(text);
-	}
+            // Conditionally emit DateOnlyConverter
+            if (this.useDateOnly()) {
+                this.emitMultiline(`
+public class DateOnlyConverter : JsonConverter<DateOnly>
+{
+    private readonly string serializationFormat;
+    public DateOnlyConverter() : this(null) { }
 
-	public override DateTimeOffset Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
-	{
-			string? dateText = reader.GetString();
-			
-			if (string.IsNullOrEmpty(dateText) == false)
-			{
-					if (!string.IsNullOrEmpty(_dateTimeFormat))
-					{
-							return DateTimeOffset.ParseExact(dateText, _dateTimeFormat, Culture, _dateTimeStyles);
-					}
-					else
-					{
-							return DateTimeOffset.Parse(dateText, Culture, _dateTimeStyles);
-					}
-			}
-			else
-			{
-					return default(DateTimeOffset);
-			}
-	}
+    public DateOnlyConverter(string? serializationFormat)
+    {
+        this.serializationFormat = serializationFormat ?? "yyyy-MM-dd";
+    }
 
+    public override DateOnly Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        var value = reader.GetString();
+        return DateOnly.Parse(value!);
+    }
 
-	public static readonly IsoDateTimeOffsetConverter Singleton = new IsoDateTimeOffsetConverter();
-}`);
+    public override void Write(Utf8JsonWriter writer, DateOnly value, JsonSerializerOptions options)
+        => writer.WriteStringValue(value.ToString(serializationFormat));
+}
+`);
+            }
+
+            // Conditionally emit TimeOnlyConverter
+            if (this.useTimeOnly()) {
+                this.emitMultiline(`
+public class TimeOnlyConverter : JsonConverter<TimeOnly>
+{
+    private readonly string serializationFormat;
+
+    public TimeOnlyConverter() : this(null) { }
+
+    public TimeOnlyConverter(string? serializationFormat)
+    {
+        this.serializationFormat = serializationFormat ?? "HH:mm:ss.fff";
+    }
+
+    public override TimeOnly Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        var value = reader.GetString();
+        return TimeOnly.Parse(value!);
+    }
+
+    public override void Write(Utf8JsonWriter writer, TimeOnly value, JsonSerializerOptions options)
+        => writer.WriteStringValue(value.ToString(serializationFormat));
+}
+`);
+            }
         }
     }
 
